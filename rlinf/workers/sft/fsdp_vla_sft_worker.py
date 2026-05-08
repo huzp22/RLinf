@@ -35,11 +35,16 @@ class FSDPVlaSftWorker(FSDPSftWorker):
 
             from rlinf.models.embodiment.openpi.dataconfig import get_openpi_config
 
+            _nw = self.cfg.actor.get("openpi_num_workers", None)
+            _seed = self.cfg.actor.get("seed", None)
             config = get_openpi_config(
                 self.cfg.actor.model.openpi.config_name,
                 model_path=self.cfg.actor.model.model_path,
                 batch_size=self.cfg.actor.micro_batch_size * self._world_size,
                 data_kwargs=getattr(self.cfg.actor, "openpi_data", None),
+                openpi_hydra=self.cfg.actor.model.openpi,
+                num_workers=int(_nw) if _nw is not None else None,
+                seed=int(_seed) if _seed is not None else None,
             )
             data_loader = openpi_data_loader.create_data_loader(
                 config, framework="pytorch", shuffle=True

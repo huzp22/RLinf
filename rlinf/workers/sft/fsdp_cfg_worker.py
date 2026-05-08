@@ -151,11 +151,16 @@ class FSDPCfgWorker(FSDPSftWorker):
             )
 
         first_path = datasets_config[0]["dataset_path"]
+        _nw = self.cfg.actor.get("openpi_num_workers", None)
+        _seed = self.cfg.actor.get("seed", None)
         config = get_openpi_config(
             openpi_cfg.config_name,
             model_path=self.cfg.actor.model.model_path,
             batch_size=self.cfg.actor.micro_batch_size * self._world_size,
             repo_id=first_path,
+            openpi_hydra=openpi_cfg,
+            num_workers=int(_nw) if _nw is not None else None,
+            seed=int(_seed) if _seed is not None else None,
         )
         data_config = config.data.create(config.assets_dirs, config.model)
 

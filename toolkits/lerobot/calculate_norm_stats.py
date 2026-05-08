@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import dataclasses
 import os
+import pathlib
 
 import numpy as np
 import openpi.models.model as _model
@@ -21,9 +23,20 @@ import openpi.training.data_loader as _data_loader
 import openpi.transforms as transforms
 import tqdm
 import tyro
-from openpi.training.config import DataConfig
+from openpi.training.config import DataConfig, TrainConfig
 
 from rlinf.models.embodiment.openpi.dataconfig import get_openpi_config
+
+
+def _default_norm_num_workers() -> int:
+    """CPU 并行加载：上限避免进程过多导致 IPC 抖动。"""
+    cpu = os.cpu_count() or 16
+    return max(8, min(cpu, 64))
+
+
+def _apply_norm_num_workers(config: TrainConfig, num_workers: int | None) -> TrainConfig:
+    nw = num_workers if num_workers is not None else _default_norm_num_workers()
+    return dataclasses.replace(config, num_workers=nw)
 
 
 class RemoveStrings(transforms.DataTransformFn):
@@ -106,17 +119,38 @@ def create_rlds_dataloader(
 
 def main(
     config_name: str,
-    repo_id: str,
+    repo_id: str = "",
+    model_path: str | None = None,
+    output_dir: str | None = None,
+    num_workers: int | None = None,
+    batch_size: int | None = None,
 ):
+    """Compute OpenPI norm stats for ``state`` and ``actions``.
+
+    Args:
+        config_name: Registered TrainConfig name (e.g. ``restock_goods_beijing_chengdu_sm2sm_norm``).
+        repo_id: Override dataset repo id(s). Comma-separated for multi-repo. Empty = use config default.
+        model_path: If set, write stats under ``<model_path>/assets/<asset_id>/`` (training expects this).
+        output_dir: Explicit output directory (overrides ``model_path`` default layout).
+        num_workers: DataLoader worker 数；默认按 CPU 核数在 [8, 64] 内自动选取。
+        batch_size: 覆盖 TrainConfig.batch_size；适当增大可加速扫库（占内存更多）。
+    """
     if not os.environ.get("HF_LEROBOT_HOME"):
         raise EnvironmentError(
             "HF_LEROBOT_HOME must be set before running this script. "
             "Export it manually, for example: "
             "export HF_LEROBOT_HOME=/path/to/lerobot_root"
         )
+    dk = {"repo_id": repo_id} if repo_id.strip() else None
     config = get_openpi_config(
         config_name,
-        data_kwargs={"repo_id": repo_id},
+        data_kwargs=dk,
+        batch_size=batch_size,
+    )
+    config = _apply_norm_num_workers(config, num_workers)
+    print(
+        f"[calculate_norm_stats] batch_size={config.batch_size}, "
+        f"num_workers={config.num_workers}"
     )
     data_config = config.data.create(config.assets_dirs, config.model)
 
@@ -142,9 +176,31 @@ def main(
 
     norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
-    output_path = config.assets_dirs / data_config.repo_id
+    # 多库时优先用稳定 ``asset_id`` 作为子目录名。
+    norm_subdir = data_config.asset_id or data_config.repo_id
+    if norm_subdir is None:
+        raise ValueError("Data config must have asset_id or repo_id for norm output path")
+
+    if output_dir is not None:
+        output_path = pathlib.Path(output_dir)
+    elif model_path is not None:
+        mp = pathlib.Path(model_path)
+        assets_root = mp / "assets"
+        assets_root.mkdir(parents=True, exist_ok=True)
+        output_path = assets_root / str(norm_subdir)
+    else:
+        output_path = config.assets_dirs / str(norm_subdir)
+
+    output_path.mkdir(parents=True, exist_ok=True)
     print(f"Writing stats to: {output_path}")
     normalize.save(output_path, norm_stats)
+
+    # 兼容 openpi 加载：有时在同目录还期望重复的一份命名（仅在有 model_path 时提示）
+    if model_path is not None:
+        print(
+            "Training will load norms from:",
+            pathlib.Path(model_path) / "assets" / str(norm_subdir),
+        )
 
 
 if __name__ == "__main__":

@@ -85,6 +85,10 @@ class OpenPi0Config(Pi0Config):
     # ===== NFT-specific parameters =====
     is_nft: bool = False
 
+    # Observation layout for env -> policy I/O: "libero" (image + wrist + state keys
+    # with observation/ prefix) or "x2robot_arx" (nested images + state for ArxInputs).
+    obs_layout: str = "libero"
+
 
 class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
     """
@@ -462,7 +466,10 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         return result
 
     def obs_processor(self, env_obs):
-        # base observation
+        if getattr(self.config, "obs_layout", "libero") == "x2robot_arx":
+            return self._obs_processor_x2robot_arx(env_obs)
+
+        # base observation (Libero / ManiSkill style keys)
         processed_obs = {
             "observation/image": env_obs["main_images"],
             "prompt": env_obs["task_descriptions"],
@@ -483,6 +490,40 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             processed_obs["observation/extra_view_image"] = env_obs["extra_view_images"]
         # store used keys
         return processed_obs
+
+    def _obs_processor_x2robot_arx(self, env_obs):
+        """Build observations for `ArxInputs` (face + left/right wrist, 28-D state)."""
+
+        def _to_numpy_img(x):
+            if x is None:
+                return None
+            if torch.is_tensor(x):
+                return x.detach().float().cpu().numpy()
+            return np.asarray(x)
+
+        face = _to_numpy_img(env_obs["main_images"])
+        left_w = _to_numpy_img(env_obs.get("wrist_images"))
+        right_w = _to_numpy_img(env_obs.get("extra_view_images"))
+        if face is None:
+            raise ValueError("x2robot_arx obs_layout requires env_obs['main_images'] (face view).")
+        if left_w is None or right_w is None:
+            raise ValueError(
+                "x2robot_arx requires env_obs['wrist_images'] (left) and "
+                "env_obs['extra_view_images'] (right wrist)."
+            )
+        states = env_obs["states"]
+        if hasattr(states, "detach"):
+            states = states.detach().cpu().numpy()
+        states = np.asarray(states)
+        return {
+            "images": {
+                "face_view": face,
+                "left_wrist_view": left_w,
+                "right_wrist_view": right_w,
+            },
+            "state": states,
+            "prompt": env_obs["task_descriptions"],
+        }
 
     def precision_processor(self, processed_obs):
         device = next(self.parameters()).device

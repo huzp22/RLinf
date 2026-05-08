@@ -47,6 +47,16 @@ def get_model(cfg: DictConfig, torch_dtype=None):
         for key, val in override_model_config_kwargs.items():
             actor_model_config.__dict__[key] = val
 
+    # X2Robot sm2sm OpenPi configs use ArxInputs; match rollout obs keys unless user set obs_layout.
+    _user_obs = False
+    if override_model_config_kwargs is not None:
+        try:
+            _user_obs = "obs_layout" in override_model_config_kwargs
+        except (TypeError, AttributeError):
+            _user_obs = False
+    if config_name and "sm2sm" in str(config_name).lower() and not _user_obs:
+        actor_model_config.__dict__["obs_layout"] = "x2robot_arx"
+
     # load model
     checkpoint_dir = download.maybe_download(str(cfg.model_path))
 
